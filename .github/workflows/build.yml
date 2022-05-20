@@ -165,6 +165,8 @@ jobs:
       run: make pythoninfo
     - name: Tests
       run: make buildbottest TESTOPTS="-j4 -uall,-cpu"
+    - name: bench
+      run: ./python demo.py
 
   build_ubuntu:
     name: 'Ubuntu'
