@@ -129,4 +129,4 @@ jobs:
     - name: Display build info
       run: make pythoninfo
     - name: bench
-      run: ./python demo.py
+      run: ./python.exe demo.py
