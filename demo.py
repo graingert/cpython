@@ -33,6 +33,15 @@ def lookup(host=None, port=None, family=0, type=0, proto=0, flags=0):
         host, port, family=family, type=type, proto=proto, flags=flags))
 
 
+async def aipaddr_info(host=None, port=None, family=0, type=0, proto=0, flags=0):
+    return _ipaddr_info(host=host, port=port, family=family, type=type, proto=proto)
+
+
+def loopup_inetpton(host=None, port=None, family=0, type=0, proto=0, flags=0):
+    return loop.run_until_complete(aipaddr_info(
+        host, port, family=family, type=type, proto=proto, flags=flags))
+
+
 print('{:>10} {:>10} {:>10} {:>10} {:>10} {:>7}'.format(
     'host', 'port', 'family', 'type', 'proto', 'secs'))
 
@@ -55,7 +64,7 @@ for info in [
     start = time.time()
     for _ in range(100000):
         _ipaddr_info_cache_clear()
-        lookup(*info)
+        loopup_inetpton(*info)
 
     duration = time.time() - start
     print('{:>10} {:>10} {:>10} {:>10} {:>10}    {:>4.1f}'.format(
