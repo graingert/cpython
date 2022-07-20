@@ -446,10 +446,12 @@ async def wait_for(fut, timeout):
 
     This function is a coroutine.
     """
+    if timeout is None:
+        return await fut
 
     async def inner():
         async with timeouts.timeout(timeout):
-            return await fut
+            return await ensure_future(fut)
 
     return await create_task(inner())
 
