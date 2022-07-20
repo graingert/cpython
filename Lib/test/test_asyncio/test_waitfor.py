@@ -289,6 +289,19 @@ class AsyncioWaitForTest(unittest.IsolatedAsyncioTestCase):
     async def test_cancel_wait_for(self):
         await self._test_cancel_wait_for(60.0)
 
+    async def test_wait_for_cancellation_propagates(self):
+        # https://github.com/python/cpython/issues/86296
+        inner = asyncio.get_running_loop().create_future()
+        outer = asyncio.wait_for(inner, 0.1)
+        outer_future = asyncio.create_task(outer)
+        await asyncio.sleep(0)
+        inner.set_result(None)  # inner is done
+        outer_future.cancel()  # AND outer got cancelled
+
+        # this fails starting with Python 3.8
+        with self.assertRaises(asyncio.CancelledError):
+            await outer_future
+
 
 if __name__ == '__main__':
     unittest.main()
