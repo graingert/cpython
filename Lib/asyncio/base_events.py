@@ -1124,12 +1124,13 @@ class BaseEventLoop(events.AbstractEventLoop):
                 server_side=server_side, server_hostname=server_hostname,
                 ssl_handshake_timeout=ssl_handshake_timeout,
                 ssl_shutdown_timeout=ssl_shutdown_timeout)
+            del sslcontext
         else:
             transport = self._make_socket_transport(sock, protocol, waiter)
 
         try:
             await waiter
-        except:
+        except BaseException as e:
             transport.close()
             raise
 

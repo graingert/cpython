@@ -1463,6 +1463,8 @@ class TestSSL(test_utils.TestCase):
             self.loop.run_until_complete(test(ctx))
             ctx = weakref.ref(ctx)
 
+        import gc
+        print([x.keys() for x in gc.get_referrers(ctx()) if type(x) is dict])
         # SSLProtocol should be DECREF to 0
         self.assertIsNone(ctx())
 

@@ -82,8 +82,8 @@ class AsyncioWaitForTest(unittest.IsolatedAsyncioTestCase):
             nonlocal foo_started
             foo_started = True
 
-        with self.assertRaises(asyncio.TimeoutError):
-            t0 = loop.time()
+        t0 = loop.time()
+        with self.assertRaises(TimeoutError):
             await asyncio.wait_for(foo(), 0)
         t1 = loop.time()
 
