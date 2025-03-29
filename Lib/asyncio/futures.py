@@ -79,14 +79,17 @@ class Future:
         loop object used by the future. If it's not provided, the future uses
         the default event loop.
         """
+        self._callbacks = []
         if loop is None:
-            self._loop = events.get_event_loop()
+            self._loop = loop = events._get_running_loop()
+            if loop is not None and self._loop.get_debug():
+                self._source_traceback = format_helpers.extract_stack(
+                    sys._getframe(1))
         else:
             self._loop = loop
-        self._callbacks = []
-        if self._loop.get_debug():
-            self._source_traceback = format_helpers.extract_stack(
-                sys._getframe(1))
+            if loop.get_debug():
+                self._source_traceback = format_helpers.extract_stack(
+                    sys._getframe(1))
 
     def __repr__(self):
         return base_futures._future_repr(self)
@@ -129,7 +132,9 @@ class Future:
         """Return the event loop the Future is bound to."""
         loop = self._loop
         if loop is None:
-            raise RuntimeError("Future object is not initialized.")
+            self._loop = loop = events._get_running_loop()
+            if loop is None:
+                raise RuntimeError("Future object is not initialized.")
         return loop
 
     def _make_cancelled_error(self):
@@ -175,8 +180,9 @@ class Future:
             return
 
         self._callbacks[:] = []
+        loop = self.get_loop()
         for callback, ctx in callbacks:
-            self._loop.call_soon(callback, self, context=ctx)
+            loop.call_soon(callback, self, context=ctx)
 
     def cancelled(self):
         """Return True if the future was cancelled."""
