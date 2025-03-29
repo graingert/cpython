@@ -81,10 +81,12 @@ class Future:
         """
         self._callbacks = []
         if loop is None:
-            self._loop = loop = events._get_running_loop()
-            if loop is not None and self._loop.get_debug():
-                self._source_traceback = format_helpers.extract_stack(
-                    sys._getframe(1))
+            loop = events._get_running_loop()
+            if loop is not None:
+                self._loop = loop
+                if self._loop.get_debug():
+                    self._source_traceback = format_helpers.extract_stack(
+                        sys._getframe(1))
         else:
             self._loop = loop
             if loop.get_debug():
@@ -132,7 +134,11 @@ class Future:
         """Return the event loop the Future is bound to."""
         loop = self._loop
         if loop is None:
-            self._loop = loop = events._get_running_loop()
+            new_loop = events._get_running_loop()
+            if new_loop is None:
+                raise RuntimeError("Future object is not initialized.")
+            vars(self).setdefault("_loop", new_loop)
+            loop = self._loop
             if loop is None:
                 raise RuntimeError("Future object is not initialized.")
         return loop
