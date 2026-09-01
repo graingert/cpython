@@ -1,5 +1,6 @@
 import socket
 import asyncio
+import errno
 import select
 import sys
 import unittest
@@ -17,6 +18,38 @@ if socket_helper.tcp_blackhole():
 
 def tearDownModule():
     asyncio.set_event_loop(None)
+
+
+if sys.platform == 'win32':
+    # Windows reports the ICMP port unreachable message triggered by a
+    # datagram sent to a closed port as ConnectionResetError on the next
+    # receive from the sending socket.
+    _PORT_UNREACHABLE_ERROR = ConnectionResetError
+
+    def _enable_port_unreachable_errors(sock):
+        pass
+
+elif sys.platform == 'linux' and hasattr(socket, 'IP_RECVERR'):
+    # Linux only reports ICMP errors on an unconnected UDP socket when
+    # IP_RECVERR is enabled, and reports them as ConnectionRefusedError.
+    _PORT_UNREACHABLE_ERROR = ConnectionRefusedError
+
+    def _enable_port_unreachable_errors(sock):
+        sock.setsockopt(socket.IPPROTO_IP, socket.IP_RECVERR, 1)
+
+else:
+    # Other platforms (macOS and the BSDs) do not report the error on an
+    # unconnected socket at all.
+    _PORT_UNREACHABLE_ERROR = None
+
+    def _enable_port_unreachable_errors(sock):
+        pass
+
+
+_skip_without_port_unreachable_errors = unittest.skipIf(
+    _PORT_UNREACHABLE_ERROR is None,
+    'platform does not report ICMP port unreachable errors '
+    'on unconnected UDP sockets')
 
 
 class MyProto(asyncio.Protocol):
@@ -610,106 +643,106 @@ class BaseSockTestsMixin:
             self.assertGreater(pr.nbytes, 0)
             tr.close()
 
+    async def _basetest_datagram_send_to_non_listening_address(self,
+                                                               recvfrom):
+        # see:
+        #   https://github.com/python/cpython/issues/91227
+        #   https://github.com/python/cpython/issues/88906
+        #   https://bugs.python.org/issue47071
+        #   https://bugs.python.org/issue44743
+        # Sending a datagram to an address that isn't listening can
+        # surface as a connection error on a later receive; the socket
+        # must still be usable afterwards.
+
+        def create_socket():
+            sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            _enable_port_unreachable_errors(sock)
+            sock.setblocking(False)
+            sock.bind(('127.0.0.1', 0))
+            self.addCleanup(close_socket, sock)
+            return sock
+
+        def close_socket(sock):
+            if sock.fileno() == -1:  # already closed
+                return
+            try:
+                sock.shutdown(socket.SHUT_RDWR)
+            except OSError as exc:
+                # the sockets are not connected, so shutdown() is not
+                # allowed on every platform
+                if exc.errno != errno.ENOTCONN:
+                    raise
+            sock.close()
+
+        socket_1 = create_socket()
+        addr_1 = socket_1.getsockname()
+
+        socket_2 = create_socket()
+        addr_2 = socket_2.getsockname()
+
+        # creating and immediately closing this to try to get an address
+        # that is not listening
+        socket_3 = create_socket()
+        addr_3 = socket_3.getsockname()
+        close_socket(socket_3)
+
+        socket_1_recv_task = self.loop.create_task(recvfrom(socket_1))
+        socket_2_recv_task = self.loop.create_task(recvfrom(socket_2))
+        await asyncio.sleep(0)
+
+        await self.loop.sock_sendto(socket_1, b'a', addr_2)
+        self.assertEqual(await socket_2_recv_task, b'a')
+
+        await self.loop.sock_sendto(socket_2, b'b', addr_1)
+        self.assertEqual(await socket_1_recv_task, b'b')
+        socket_1_recv_task = self.loop.create_task(recvfrom(socket_1))
+        await asyncio.sleep(0)
+
+        # this should send to an address that isn't listening
+        await self.loop.sock_sendto(socket_1, b'c', addr_3)
+        with self.assertRaises(_PORT_UNREACHABLE_ERROR):
+            await socket_1_recv_task
+        socket_1_recv_task = self.loop.create_task(recvfrom(socket_1))
+        await asyncio.sleep(0)
+
+        # socket 1 should still be able to receive messages after sending
+        # to an address that wasn't listening
+        socket_2.sendto(b'd', addr_1)
+        self.assertEqual(await socket_1_recv_task, b'd')
+
+    @_skip_without_port_unreachable_errors
+    def test_datagram_send_to_non_listening_address_recvfrom(self):
+        async def recvfrom(socket):
+            data, _ = await self.loop.sock_recvfrom(socket, 4096)
+            return data
+
+        self.loop.run_until_complete(
+            self._basetest_datagram_send_to_non_listening_address(
+                recvfrom))
+
+    @_skip_without_port_unreachable_errors
+    def test_datagram_send_to_non_listening_address_recvfrom_into(self):
+        async def recvfrom_into(socket):
+            buf = bytearray(4096)
+            length, _ = await self.loop.sock_recvfrom_into(socket, buf,
+                                                           4096)
+            return buf[:length]
+
+        self.loop.run_until_complete(
+            self._basetest_datagram_send_to_non_listening_address(
+                recvfrom_into))
+
 
 if sys.platform == 'win32':
 
-    class _DatagramSendToNonListeningAddressMixin:
-        # Shared by SelectEventLoopTests and ProactorEventLoopTests so that
-        # sock_recvfrom()/sock_recvfrom_into() behave identically on both
-        # event loop implementations.
-
-        async def _basetest_datagram_send_to_non_listening_address(self,
-                                                                   recvfrom):
-            # see:
-            #   https://github.com/python/cpython/issues/91227
-            #   https://github.com/python/cpython/issues/88906
-            #   https://bugs.python.org/issue47071
-            #   https://bugs.python.org/issue44743
-            # Sending a datagram to an address that isn't listening can
-            # surface as a ConnectionResetError on a later receive; the
-            # socket must still be usable afterwards.
-
-            def create_socket():
-                sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                sock.setblocking(False)
-                sock.bind(('127.0.0.1', 0))
-                return sock
-
-            socket_1 = create_socket()
-            addr_1 = socket_1.getsockname()
-
-            socket_2 = create_socket()
-            addr_2 = socket_2.getsockname()
-
-            # creating and immediately closing this to try to get an address
-            # that is not listening
-            socket_3 = create_socket()
-            addr_3 = socket_3.getsockname()
-            socket_3.shutdown(socket.SHUT_RDWR)
-            socket_3.close()
-
-            socket_1_recv_task = self.loop.create_task(recvfrom(socket_1))
-            socket_2_recv_task = self.loop.create_task(recvfrom(socket_2))
-            await asyncio.sleep(0)
-
-            await self.loop.sock_sendto(socket_1, b'a', addr_2)
-            self.assertEqual(await socket_2_recv_task, b'a')
-
-            await self.loop.sock_sendto(socket_2, b'b', addr_1)
-            self.assertEqual(await socket_1_recv_task, b'b')
-            socket_1_recv_task = self.loop.create_task(recvfrom(socket_1))
-            await asyncio.sleep(0)
-
-            # this should send to an address that isn't listening
-            await self.loop.sock_sendto(socket_1, b'c', addr_3)
-            with self.assertRaises(ConnectionResetError):
-                await socket_1_recv_task
-            socket_1_recv_task = self.loop.create_task(recvfrom(socket_1))
-            await asyncio.sleep(0)
-
-            # socket 1 should still be able to receive messages after sending
-            # to an address that wasn't listening
-            socket_2.sendto(b'd', addr_1)
-            self.assertEqual(await socket_1_recv_task, b'd')
-
-            socket_1.shutdown(socket.SHUT_RDWR)
-            socket_1.close()
-            socket_2.shutdown(socket.SHUT_RDWR)
-            socket_2.close()
-
-
-        def test_datagram_send_to_non_listening_address_recvfrom(self):
-            async def recvfrom(socket):
-                data, _ = await self.loop.sock_recvfrom(socket, 4096)
-                return data
-
-            self.loop.run_until_complete(
-                self._basetest_datagram_send_to_non_listening_address(
-                    recvfrom))
-
-
-        def test_datagram_send_to_non_listening_address_recvfrom_into(self):
-            async def recvfrom_into(socket):
-                buf = bytearray(4096)
-                length, _ = await self.loop.sock_recvfrom_into(socket, buf,
-                                                               4096)
-                return buf[:length]
-
-            self.loop.run_until_complete(
-                self._basetest_datagram_send_to_non_listening_address(
-                    recvfrom_into))
-
-
-    class SelectEventLoopTests(_DatagramSendToNonListeningAddressMixin,
-                               BaseSockTestsMixin,
+    class SelectEventLoopTests(BaseSockTestsMixin,
                                test_utils.TestCase):
 
         def create_event_loop(self):
             return asyncio.SelectorEventLoop()
 
 
-    class ProactorEventLoopTests(_DatagramSendToNonListeningAddressMixin,
-                                 BaseSockTestsMixin,
+    class ProactorEventLoopTests(BaseSockTestsMixin,
                                  test_utils.TestCase):
 
         def create_event_loop(self):
